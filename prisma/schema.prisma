@@ -1,0 +1,208 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  OPERATIONS_MANAGER
+  TEAM_LEAD
+  CASE_WORKER
+  AUDITOR
+}
+
+enum CaseStatus {
+  NEW
+  TRIAGED
+  IN_PROGRESS
+  WAITING_EXTERNAL
+  ESCALATED
+  RESOLVED
+  CLOSED
+  CANCELLED
+}
+
+enum CasePriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum DeadlineStatus {
+  OPEN
+  MET
+  MISSED
+  WAIVED
+}
+
+enum EscalationStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+model Team {
+  id        String @id @default(cuid())
+  name      String
+  code      String @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members    User[]
+  ownedCases Case[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  role         UserRole
+  passwordHash String
+  teamId       String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  team               Team?          @relation(fields: [teamId], references: [id])
+  sessions           Session[]
+  createdCases       Case[]         @relation("CasesCreatedBy")
+  assignedCases      Case[]         @relation("CasesAssignedTo")
+  notes              CaseNote[]
+  uploadedAttachments Attachment[]
+  createdDeadlines   Deadline[]
+  raisedEscalations  Escalation[]   @relation("EscalationsRaisedBy")
+  acknowledgedEscalations Escalation[] @relation("EscalationsAcknowledgedBy")
+  auditLogs          AuditLog[]
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  tokenHash    String   @unique
+  userId       String
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Case {
+  id            String       @id @default(cuid())
+  caseNumber    String       @unique
+  title         String
+  description   String
+  status        CaseStatus   @default(NEW)
+  priority      CasePriority @default(MEDIUM)
+  severity      Int
+  sourceSystem  String?
+  requesterName String
+  requesterEmail String?
+  owningTeamId  String
+  assignedToId  String?
+  createdById   String
+  closedAt      DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  owningTeam Team @relation(fields: [owningTeamId], references: [id])
+  assignedTo User? @relation("CasesAssignedTo", fields: [assignedToId], references: [id])
+  createdBy  User  @relation("CasesCreatedBy", fields: [createdById], references: [id])
+
+  notes       CaseNote[]
+  attachments Attachment[]
+  deadlines   Deadline[]
+  escalations Escalation[]
+  auditLogs   AuditLog[]
+
+  @@index([owningTeamId, status])
+  @@index([assignedToId, status])
+}
+
+model CaseNote {
+  id           String   @id @default(cuid())
+  caseId        String
+  authorId      String
+  body          String
+  isRestricted  Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  case   Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  author User @relation(fields: [authorId], references: [id])
+
+  @@index([caseId, createdAt])
+}
+
+model Attachment {
+  id           String   @id @default(cuid())
+  caseId        String
+  uploadedById  String
+  fileName      String
+  storageKey    String
+  contentType   String
+  fileSizeBytes Int
+  createdAt     DateTime @default(now())
+
+  case       Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  uploadedBy User @relation(fields: [uploadedById], references: [id])
+
+  @@index([caseId, createdAt])
+}
+
+model Deadline {
+  id          String         @id @default(cuid())
+  caseId       String
+  createdById  String
+  label        String
+  dueAt        DateTime
+  status       DeadlineStatus @default(OPEN)
+  resolvedAt   DateTime?
+  createdAt    DateTime       @default(now())
+
+  case      Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  createdBy User @relation(fields: [createdById], references: [id])
+  escalation Escalation?
+
+  @@index([caseId, dueAt])
+  @@index([status, dueAt])
+}
+
+model Escalation {
+  id                  String           @id @default(cuid())
+  caseId               String
+  raisedById           String
+  acknowledgedById     String?
+  triggeredByDeadlineId String?        @unique
+  reason               String
+  status               EscalationStatus @default(OPEN)
+  acknowledgedAt       DateTime?
+  resolvedAt           DateTime?
+  createdAt            DateTime         @default(now())
+
+  case                Case      @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  raisedBy            User      @relation("EscalationsRaisedBy", fields: [raisedById], references: [id])
+  acknowledgedBy      User?     @relation("EscalationsAcknowledgedBy", fields: [acknowledgedById], references: [id])
+  triggeredByDeadline Deadline? @relation(fields: [triggeredByDeadlineId], references: [id])
+
+  @@index([caseId, status])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  caseId      String?
+  actorId     String?
+  action      String
+  entityType  String
+  entityId    String
+  metadata    Json
+  createdAt   DateTime @default(now())
+
+  case  Case? @relation(fields: [caseId], references: [id], onDelete: SetNull)
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([caseId, createdAt])
+}
