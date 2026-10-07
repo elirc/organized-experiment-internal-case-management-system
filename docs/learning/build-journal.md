@@ -36,7 +36,7 @@ Decision: Keep frontend thin and let hooks mirror real REST endpoints.
 Why: The docs can now trace from `src/components/**` into the actual API handlers without hand-waving.
 
 ## Stage 8 — Tests and docs
-Built: Focused tests for auth rejection, validation, transition safety, and scope isolation plus the architecture and learning docs set.
+Built: Focused tests for auth rejection, validation, transition safety, and scope isolation plus the architecture and learning docs set. (Precisely: four test files with one `it` and one `expect` each; see `docs/learning/testing-rationale.md` for what each does and does not cover.)
 Decision: Prefer small tests aimed at high-risk failures over broad but shallow snapshots.
 Why: The most useful learning tests are the ones guarding production failure modes.
 
@@ -119,7 +119,7 @@ Files with novel logic:
 - `src/services/referenceDataService.ts`
 - `src/app/api/admin/escalation-sweeps/route.ts`
 Reviewer focus:
-- `src/services/reportService.ts`: verify client-supplied filters are additive to auth scope.
+- `src/services/reportService.ts`: verify client-supplied filters are additive to auth scope. (Review result: they are not — the spread order at `reportService.ts:19-22` lets `teamId` replace the scope. This slice would not pass this reviewer-focus item as written; see Stage 9.)
 - `src/services/escalationService.ts`: inspect the per-deadline transaction loop and audit writes.
 - `src/services/referenceDataService.ts`: verify reference-data endpoints still enforce team scope.
 Stronger-reviewer flag: A junior reviewer may treat reporting and dropdown endpoints as low-risk, even though both can leak data if scope is wrong.
@@ -152,3 +152,34 @@ Reviewer focus:
 - `src/services/caseService.test.ts`: verify the team scope is passed into the repository call, not applied only in the UI.
 - `docs/learning/flow-traces.md`: verify every trace names actual files and real function calls.
 Stronger-reviewer flag: A junior reviewer may see “tests exist” and not ask whether they cover the highest-risk security and workflow edges.
+
+## Stage 9 — Post-build review against the code
+
+Built: Nothing new in source. A line-by-line read of every route, service and repository, comparing what the docs and in-code senior notes *claim* with what the code *does*, and correcting the docs in place.
+Decision: Record gaps as findings rather than silently rewording the claims.
+Why: Several protections were stated in more than one place (a code comment, the architecture docs, the reports page subtitle) but were not implemented. A learner who trusts the prose would copy the bug.
+
+Claims that did not survive the read:
+
+| Claim (where) | What the code does | Evidence |
+|---|---|---|
+| "Team filters from the client are additive to auth scope, never a replacement" (`reportService.ts:18`; Slice 3 reviewer focus; guided path step 11) | Later spread overwrites `owningTeamId` | `reportService.ts:19-22`; same pattern `caseService.ts:96-100` |
+| "aggregate reporting cannot bypass row-level visibility" (`auth-and-permissions.md`; `src/app/reports/page.tsx:7`) | Team lead can request another team's aggregates | as above |
+| Restricted notes are hidden from roles without `note:view:restricted` | Hidden in `notes`, visible in `auditLogs[].metadata.comment` | `caseService.ts:430-449`, `:47-53`; `caseRepository.ts:150-164` |
+| `case:assign` governs assignment (implied by the matrix) | Never checked | only occurrences are in `permissions.ts` |
+| Escalations are resolvable and gate closure | Gate exists; nothing can resolve | `caseService.ts:416-422`; no writer of `EscalationStatus.RESOLVED` |
+| Sweep respects workflow (implied by "workflow safety" sections) | Writes `ESCALATED` from any open status | `escalationService.ts:44-48` vs `caseWorkflow.ts:13-22` |
+| `Deadline.triggeredByDeadlineId` | Column is on `Escalation` | `prisma/schema.prisma:179` |
+
+Claims that did survive: `buildCaseAccessWhere()` refuses to widen when `teamId` is missing (`authorize.ts:49-52`); every case mutation loads the case through the scoped lookup before writing; audit rows are written in the same transaction as the business write; raw session tokens are never stored; login error messages are identical for unknown email and bad password.
+
+### Slice 6 (proposed) — Close the verified gaps
+Purpose in one sentence: Make the implemented behavior match the documented protections.
+Files that would change:
+- `src/services/caseService.ts` — spread scope last in `buildCaseListWhere()`; strip `comment` from audit metadata for restricted escalations or filter `auditLogs` in `serializeCaseDetail()`; check `case:assign` whenever `assignedToId` is present; require re-assignment (or clear the assignee) on team moves.
+- `src/services/reportService.ts` — spread scope last.
+- `src/services/escalationService.ts` — re-read case status inside the transaction and skip or validate the edge.
+- New escalation acknowledge/resolve route guarded by `escalation:manage`.
+- Tests for each, written to fail first.
+Reviewer focus: every new test should fail on the current `main` before the fix lands; if one passes, it is not testing the gap.
+Stronger-reviewer flag: Fixing the spread order is a one-line change that a reviewer may approve without asking for the conflicting-filter test that proves it.
